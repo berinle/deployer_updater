@@ -19,3 +19,4 @@ requests #>=2.31.0
 apscheduler #>=3.10.4
 python-dotenv #>=1.0.1
 setuptools>=40.8.0
+wheel>=0.37.1
