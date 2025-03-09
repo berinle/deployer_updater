@@ -18,3 +18,4 @@ requests #>=2.31.0
 # Scheduler for cron jobs
 apscheduler #>=3.10.4
 python-dotenv #>=1.0.1
+setuptools>=40.8.0
