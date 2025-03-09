@@ -1,0 +1,187 @@
+import os
+import psycopg2
+from datetime import datetime
+import boto3
+import logging
+from croniter import croniter
+import pytz
+import json
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+load_dotenv()
+
+def get_active_db_url():
+    """Get DATASOURCE_URL from active ECS task definition"""
+    try:
+        logger.info("Retrieving active ECS task definition...")
+        ecs_client = boto3.client('ecs', region_name=os.environ['AWS_REGION'])
+        
+        # Get list of running tasks
+        tasks = ecs_client.list_tasks(
+            cluster=os.environ['ECS_CLUSTER_NAME'],
+            desiredStatus='RUNNING'
+        )
+        
+        if not tasks['taskArns']:
+            raise Exception("No running tasks found")
+            
+        # Get task details
+        task_details = ecs_client.describe_tasks(
+            cluster=os.environ['ECS_CLUSTER_NAME'],
+            tasks=[tasks['taskArns'][0]]
+        )
+        
+        task_definition_arn = task_details['tasks'][0]['taskDefinitionArn']
+        
+        # Get task definition
+        task_def = ecs_client.describe_task_definition(
+            taskDefinition=task_definition_arn
+        )
+        
+        # Extract DATASOURCE_URL from environment variables
+        for container in task_def['taskDefinition']['containerDefinitions']:
+            for env in container['environment']:
+                if env['name'] == 'DATASOURCE_URL':
+                    logger.info("Successfully retrieved DATASOURCE_URL")
+                    return env['value']
+                    
+        raise Exception("DATASOURCE_URL not found in task definition")
+        
+    except Exception as e:
+        logger.error(f"Error retrieving DATASOURCE_URL: {str(e)}")
+        return None
+
+def test_db_connection(db_url):
+    """Test connection to Aurora PostgreSQL database"""
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        
+        logger.info("Testing database connection...")
+        cursor.execute("SELECT 1")
+        result = cursor.fetchone()
+        
+        if result[0] == 1:
+            logger.info("Database connection test successful")
+        
+        cursor.close()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Database connection test failed: {str(e)}")
+        return False
+
+def get_ready_deployments():
+    """Get all deployments in READY state"""
+    try:
+        logger.info("Retrieving deployments in READY state...")
+        client = boto3.client('codedeploy')
+        
+        deployments = []
+        paginator = client.get_paginator('list_deployments')
+        
+        for page in paginator.paginate():
+            batch_deployments = client.batch_get_deployments(
+                deploymentIds=page['deployments']
+            )
+            
+            for deployment in batch_deployments['deploymentsInfo']:
+                if deployment['status'] == 'READY':
+                    deployments.append(deployment['deploymentId'])
+        
+        logger.info(f"Found {len(deployments)} deployments in READY state")
+        return deployments
+        
+    except Exception as e:
+        logger.error(f"Error retrieving ready deployments: {str(e)}")
+        return []
+
+def update_deployment_status(deployment_ids, db_url):
+    """Update deployment status and audit entries"""
+    try:
+        client = boto3.client('codedeploy')
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        
+        release_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        for deployment_id in deployment_ids:
+            try:
+                logger.info(f"Processing deployment ID: {deployment_id}")
+                
+                # Continue deployment
+                response = client.continue_deployment(
+                    deploymentId=deployment_id
+                )
+                
+                # Insert audit entry
+                cursor.execute(
+                    "INSERT INTO deploy_audit (deploy_id, release_datetime) VALUES (%s, %s)",
+                    (deployment_id, release_datetime)
+                )
+                
+                logger.info(f"Successfully continued deployment and created audit entry for ID: {deployment_id}")
+                
+            except Exception as e:
+                logger.error(f"Error processing deployment ID {deployment_id}: {str(e)}")
+                continue
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+                
+    except Exception as e:
+        logger.error(f"Error in update_deployment_status: {str(e)}")
+
+def main():
+    """Main function to be executed by cron"""
+    logger.info("Starting deployment status update process")
+    
+    # Get active database URL
+    active_db = get_active_db_url()
+    if not active_db:
+        logger.error("Failed to retrieve database URL. Exiting...")
+        return
+    
+    # Test database connection first
+    if not test_db_connection(active_db):
+        logger.error("Database connection test failed. Exiting...")
+        return
+    
+    # Get deployments in READY state
+    deployment_ids = get_ready_deployments()
+    if not deployment_ids:
+        logger.info("No deployments in READY state found. Exiting...")
+        return
+    
+    # Update deployment status and create audit entries
+    update_deployment_status(deployment_ids, active_db)
+    
+    logger.info("Deployment status update process completed")
+
+if __name__ == "__main__":
+    # Check if it's 4 PM ET
+    et_timezone = pytz.timezone('US/Eastern')
+    current_time = datetime.now(et_timezone)
+    
+    # Create a cron expression for 4 PM ET
+    # cron = croniter('0 16 * * *', current_time)
+    
+    # if current_time.hour == 16 and current_time.minute == 0:
+    #     main()
+    # else:
+    #     logger.info("Not execution time (4 PM ET). Skipping...")
+
+    main()
+
+
+
+
