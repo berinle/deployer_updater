@@ -16,8 +16,9 @@ boto3 #>=1.34.0
 requests #>=2.31.0
 
 # Scheduler for cron jobs
-apscheduler #>=3.10.4
+# apscheduler #>=3.10.4
+# backports.zoneinfo>=0.2.1
 python-dotenv #>=1.0.1
 setuptools>=40.8.0
 wheel>=0.37.1
-backports.zoneinfo>=0.2.1
+croniter>=1.3.14  

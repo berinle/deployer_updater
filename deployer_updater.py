@@ -1,9 +1,11 @@
-import boto3
-import datetime
-import requests
 import logging
-from apscheduler.schedulers.background import BackgroundScheduler
+import time
+from datetime import datetime
+
+import boto3
+import requests
 from botocore.exceptions import ClientError
+from croniter import croniter
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -65,7 +67,7 @@ def make_api_call():
     try:
         # Prepare payload with current timestamp
         payload = {
-            'timestamp': datetime.datetime.now().isoformat(),
+            'timestamp': datetime.now().isoformat(),
             'message': 'Deployment status update completed'
         }
         
@@ -84,22 +86,31 @@ def make_api_call():
         logger.error(f"Error making POST request: {str(e)}")
 
 def schedule_tasks():
-    # Create scheduler
-    scheduler = BackgroundScheduler()
-    
-    # Schedule the API call for 4PM EST daily
-    # Note: Using EST timezone (-5 UTC offset)
-    scheduler.add_job(
-        make_api_call,
-        'cron',
-        hour=16,  # 4PM EST = 20:00 UTC (adjust based on daylight savings if needed)
-        minute=0,
-        timezone='America/New_York'
-    )
-    
-    # Start the scheduler
-    scheduler.start()
-    print("Scheduler started. Tasks will run at 4PM EST daily")
+    # Define the cron schedule for 4PM EST daily
+    cron_expression = '0 16 * * *'  # 4PM daily
+
+    # Get the current time in UTC
+    now = datetime.now()
+
+    # Create a croniter object
+    cron = croniter(cron_expression, now)
+
+    while True:
+        # Get the next scheduled time
+        next_run = cron.get_next(datetime)
+
+        # Calculate the sleep duration until the next run
+        sleep_duration = (next_run - datetime.now()).total_seconds()
+
+        # Sleep until the next scheduled time
+        if sleep_duration > 0:
+            time.sleep(sleep_duration)
+
+        # Execute the task
+        make_api_call()
+
+        # Log the execution
+        logger.info(f"Task executed at {datetime.now()}")
 
 def get_ready_deployments():
     """Get all deployments in READY state"""
@@ -130,7 +141,7 @@ def get_ready_deployments():
 def main():
     try:
         # Initial run to update deployments
-        print(f"Starting deployment status update at {datetime.datetime.now()}")
+        print(f"Starting deployment status update at {datetime.now()}")
         update_deployment_status()
         
         # Schedule the daily API call
